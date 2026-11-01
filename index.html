@@ -17,159 +17,272 @@
   var renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
   renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
   renderer.setClearColor(0x000000, 0);
+  renderer.outputEncoding = THREE.sRGBEncoding;
+  renderer.toneMapping = THREE.ACESFilmicToneMapping;
+  renderer.toneMappingExposure = 1.1;
+  renderer.shadowMap.enabled = true;
+  renderer.shadowMap.type = THREE.PCFSoftShadowMap;
   document.body.appendChild(renderer.domElement);
 
   var scene = new THREE.Scene();
   var camera = new THREE.PerspectiveCamera(35, 1, 0.1, 100);
-  camera.position.set(0, 2.6, 12.5);
-  camera.lookAt(0, 2.3, 0);
-
-  // ---------- lights ----------
-  scene.add(new THREE.HemisphereLight(0xffffff, 0x9a86c8, 0.85));
-  var key = new THREE.DirectionalLight(0xffffff, 0.8);
-  key.position.set(3, 6, 6);
-  scene.add(key);
-  var rim = new THREE.PointLight(0xff9a6b, 0.6, 20);
-  rim.position.set(-4, 3, -4);
-  scene.add(rim);
 
   // ---------- helpers ----------
-  function mat(color, extra) {
-    var o = { color: color, roughness: 0.55, metalness: 0.0 };
-    if (extra) for (var k in extra) o[k] = extra[k];
-    return new THREE.MeshStandardMaterial(o);
+  function srgb(hex) { return new THREE.Color(hex).convertSRGBToLinear(); }
+  function canvasTex(w, h, draw, isColor) {
+    var c = document.createElement('canvas');
+    c.width = w; c.height = h;
+    draw(c.getContext('2d'), w, h);
+    var t = new THREE.CanvasTexture(c);
+    if (isColor) t.encoding = THREE.sRGBEncoding;
+    t.anisotropy = 4;
+    return t;
   }
-  function ball(r, color, sx, sy, sz) {
-    var m = new THREE.Mesh(new THREE.SphereGeometry(r, 32, 24), mat(color));
+  function rnd(a, b) { return a + Math.random() * (b - a); }
+
+  // ---------- procedural textures ----------
+  var bumpTex = canvasTex(256, 256, function (g, w, h) {
+    g.fillStyle = '#808080'; g.fillRect(0, 0, w, h);
+    for (var i = 0; i < 5000; i++) {
+      var v = Math.floor(rnd(70, 210));
+      g.fillStyle = 'rgba(' + v + ',' + v + ',' + v + ',0.55)';
+      g.beginPath(); g.arc(rnd(0, w), rnd(0, h), rnd(0.8, 2.6), 0, 6.283); g.fill();
+    }
+  });
+  bumpTex.wrapS = bumpTex.wrapT = THREE.RepeatWrapping;
+  bumpTex.repeat.set(3, 3);
+
+  var fuzzBase = canvasTex(256, 256, function (g, w, h) {
+    g.fillStyle = '#000'; g.fillRect(0, 0, w, h);
+    g.fillStyle = '#fff';
+    for (var i = 0; i < 1500; i++) {
+      g.beginPath(); g.arc(rnd(0, w), rnd(0, h), rnd(0.6, 1.1), 0, 6.283); g.fill();
+    }
+  });
+  function fuzzTex(rep) {
+    var t = fuzzBase.clone();
+    t.needsUpdate = true;
+    t.wrapS = t.wrapT = THREE.RepeatWrapping;
+    t.repeat.set(rep, rep);
+    return t;
+  }
+  var fuzzTexes = [fuzzTex(6), fuzzTex(8), fuzzTex(10)];
+
+  // ---------- materials ----------
+  var PURPLE = 0x9a78e0, BELLY = 0xe2d4ff, ORANGE = 0xffa83a, WING = 0xff7a59, PINK = 0xff9fb8, GOLD = 0xffd166;
+
+  var skinMat = new THREE.MeshPhysicalMaterial({
+    color: srgb(PURPLE), roughness: 0.62, metalness: 0,
+    bumpMap: bumpTex, bumpScale: 1.0,
+    emissive: srgb(0x2a1a5a), emissiveIntensity: 0.5
+  });
+  skinMat.sheen = srgb(0xd9c9ff);
+
+  var bellyMat = new THREE.MeshPhysicalMaterial({
+    color: srgb(BELLY), roughness: 0.7, bumpMap: bumpTex, bumpScale: 1.2,
+    emissive: srgb(0x40306a), emissiveIntensity: 0.35
+  });
+  bellyMat.sheen = srgb(0xffffff);
+
+  function std(color, o) {
+    var p = { color: srgb(color), roughness: 0.5, metalness: 0 };
+    if (o) for (var k in o) p[k] = o[k];
+    return new THREE.MeshStandardMaterial(p);
+  }
+
+  function ball(r, material, sx, sy, sz) {
+    var m = new THREE.Mesh(new THREE.SphereGeometry(r, 40, 28), material);
     m.scale.set(sx || 1, sy || 1, sz || 1);
     return m;
   }
 
-  var PURPLE = 0x9a78e0, BELLY = 0xd9c8ff, ORANGE = 0xffa83a, WING = 0xff7a59, PINK = 0xff9fb8;
+  // short fuzz shells (alpha-tested dots) give a peach-fuzz skin
+  function fuzz(mesh, color) {
+    [1.016, 1.032, 1.048].forEach(function (s, i) {
+      var c = srgb(color).multiplyScalar(0.98 + i * 0.03);
+      var m = new THREE.MeshStandardMaterial({
+        color: c, roughness: 1, alphaMap: fuzzTexes[i], alphaTest: 0.5
+      });
+      var shell = new THREE.Mesh(mesh.geometry, m);
+      shell.scale.setScalar(s);
+      shell.userData.noShadow = true;
+      mesh.add(shell);
+    });
+  }
 
-  var root = new THREE.Group();   // spins with drag
-  var hop = new THREE.Group();    // jump + bob
-  root.add(hop);
-  scene.add(root);
+  // ---------- lights ----------
+  scene.add(new THREE.HemisphereLight(0xdfe6ff, 0x8b6fd0, 0.7));
+  var key = new THREE.DirectionalLight(0xfff1e0, 1.25);
+  key.position.set(4, 10, 7);
+  key.castShadow = true;
+  key.shadow.mapSize.set(1024, 1024);
+  key.shadow.camera.left = -8; key.shadow.camera.right = 8;
+  key.shadow.camera.top = 8; key.shadow.camera.bottom = -8;
+  key.shadow.camera.near = 1; key.shadow.camera.far = 30;
+  key.shadow.radius = 4;
+  key.shadow.bias = -0.0005;
+  scene.add(key);
+  var fill = new THREE.DirectionalLight(0x9db8ff, 0.45);
+  fill.position.set(-6, 3, 4);
+  scene.add(fill);
+  var rim = new THREE.DirectionalLight(0xff9a6b, 0.9);
+  rim.position.set(-3, 5, -7);
+  scene.add(rim);
 
-  // ---------- soft ground shadow ----------
-  var sc = document.createElement('canvas');
-  sc.width = sc.height = 128;
-  var sx = sc.getContext('2d');
-  var g = sx.createRadialGradient(64, 64, 4, 64, 64, 62);
-  g.addColorStop(0, 'rgba(40,20,80,0.45)');
-  g.addColorStop(1, 'rgba(40,20,80,0)');
-  sx.fillStyle = g;
-  sx.fillRect(0, 0, 128, 128);
-  var shadow = new THREE.Mesh(
-    new THREE.PlaneGeometry(3.4, 3.4),
-    new THREE.MeshBasicMaterial({ map: new THREE.CanvasTexture(sc), transparent: true, depthWrite: false })
-  );
-  shadow.rotation.x = -Math.PI / 2;
-  shadow.position.y = 0.01;
-  root.add(shadow);
+  // shadow catcher (transparent page background stays transparent)
+  var ground = new THREE.Mesh(new THREE.PlaneGeometry(40, 40), new THREE.ShadowMaterial({ opacity: 0.22 }));
+  ground.rotation.x = -Math.PI / 2;
+  ground.receiveShadow = true;
+  scene.add(ground);
 
-  // ---------- body ----------
-  var body = ball(1, PURPLE, 1.0, 1.05, 0.9);
+  // ---------- rig ----------
+  var fly = new THREE.Group();     // path position + yaw + drag spin
+  var tilt = new THREE.Group();    // bank / lean / loop (around center of mass)
+  var rig = new THREE.Group();     // character, origin at feet
+  tilt.position.y = 1.5;
+  rig.position.y = -1.5;
+  scene.add(fly); fly.add(tilt); tilt.add(rig);
+
+  // body
+  var body = ball(1, skinMat, 1.0, 1.05, 0.9);
   body.position.y = 1.0;
-  hop.add(body);
+  rig.add(body); fuzz(body, PURPLE);
 
-  var belly = ball(1, BELLY, 0.62, 0.7, 0.3);
+  var belly = ball(1, bellyMat, 0.62, 0.7, 0.3);
   belly.position.set(0, 0.95, 0.78);
-  hop.add(belly);
+  rig.add(belly); fuzz(belly, BELLY);
 
-  // feet
+  // feet (swing in flight)
   var feet = [];
   [-1, 1].forEach(function (s) {
-    var f = ball(0.38, PURPLE, 1.1, 0.55, 1.3);
-    f.position.set(s * 0.5, 0.2, 0.35);
-    hop.add(f);
+    var piv = new THREE.Group();
+    piv.position.set(s * 0.5, 0.62, 0.3);
+    var f = ball(0.38, skinMat, 1.1, 0.55, 1.3);
+    f.position.set(0, -0.42, 0.05);
+    piv.add(f);
     [-1, 0, 1].forEach(function (t) {
-      var toe = ball(0.09, ORANGE, 1, 1, 1.2);
-      toe.position.set(s * 0.5 + t * 0.2, 0.15, 0.82);
-      hop.add(toe);
+      var toe = ball(0.09, std(ORANGE, { roughness: 0.35 }), 1, 1, 1.2);
+      toe.position.set(t * 0.2, -0.48, 0.55);
+      piv.add(toe);
     });
-    feet.push(f);
+    rig.add(piv);
+    feet.push(piv);
   });
 
   // ---------- head ----------
   var head = new THREE.Group();
   head.position.set(0, 2.45, 0.05);
-  hop.add(head);
+  rig.add(head);
 
-  var skull = ball(1.05, PURPLE, 1.12, 1.0, 1.0);
-  head.add(skull);
+  var skull = ball(1.05, skinMat, 1.12, 1.0, 1.0);
+  head.add(skull); fuzz(skull, PURPLE);
 
-  // horns
-  [-1, 1].forEach(function (s) {
-    var h = new THREE.Mesh(new THREE.ConeGeometry(0.2, 0.75, 20), mat(ORANGE, { roughness: 0.4 }));
-    h.position.set(s * 0.62, 0.95, 0.05);
-    h.rotation.z = -s * 0.45;
-    head.add(h);
-  });
+  // ridged horns
+  function makeHorn(side) {
+    var g = new THREE.Group();
+    var curve = new THREE.CatmullRomCurve3([
+      new THREE.Vector3(0, 0, 0),
+      new THREE.Vector3(side * 0.10, 0.38, 0),
+      new THREE.Vector3(side * 0.30, 0.72, 0),
+      new THREE.Vector3(side * 0.62, 0.98, 0)
+    ]);
+    var N = 11, pts = curve.getPoints(N);
+    var hornMat = std(0xf2b24a, { roughness: 0.38, bumpMap: bumpTex, bumpScale: 0.6 });
+    var up = new THREE.Vector3(0, 1, 0);
+    for (var i = 0; i < N; i++) {
+      var a = pts[i], b = pts[i + 1];
+      var dir = b.clone().sub(a);
+      var len = dir.length();
+      var r0 = 0.2 * (1 - i / N) * (1 + (i % 2 ? 0.14 : -0.04));
+      var r1 = 0.2 * (1 - (i + 1) / N) * (1 + ((i + 1) % 2 ? 0.14 : -0.04));
+      var seg = new THREE.Mesh(new THREE.CylinderGeometry(Math.max(r1, 0.012), r0, len * 1.04, 16), hornMat);
+      seg.position.copy(a.clone().add(b).multiplyScalar(0.5));
+      seg.quaternion.setFromUnitVectors(up, dir.normalize());
+      g.add(seg);
+    }
+    g.position.set(side * 0.55, 0.82, 0.05);
+    return g;
+  }
+  head.add(makeHorn(-1)); head.add(makeHorn(1));
 
   // ears
   [-1, 1].forEach(function (s) {
-    var e = ball(0.26, PURPLE, 0.5, 1.0, 0.8);
+    var e = ball(0.26, skinMat, 0.5, 1.0, 0.8);
     e.position.set(s * 1.18, 0.1, -0.05);
     e.rotation.z = -s * 0.3;
     head.add(e);
-    var inner = ball(0.17, PINK, 0.35, 0.8, 0.5);
+    var inner = ball(0.17, std(PINK, { roughness: 0.7 }), 0.35, 0.8, 0.5);
     inner.position.set(s * 1.24, 0.1, 0.0);
     inner.rotation.z = -s * 0.3;
     head.add(inner);
   });
 
-  // antenna
+  // antenna with real glow light
   var antenna = new THREE.Group();
   antenna.position.set(0, 1.0, 0);
   head.add(antenna);
-  var stalk = new THREE.Mesh(new THREE.CylinderGeometry(0.035, 0.05, 0.6, 10), mat(0x6a4fb5));
+  var stalk = new THREE.Mesh(new THREE.CylinderGeometry(0.035, 0.05, 0.6, 12), std(0x6a4fb5));
   stalk.position.y = 0.3;
   antenna.add(stalk);
   var bulb = new THREE.Mesh(
-    new THREE.SphereGeometry(0.14, 20, 16),
-    mat(0xffe27a, { emissive: 0xffc233, emissiveIntensity: 0.9, roughness: 0.3 })
+    new THREE.SphereGeometry(0.14, 24, 18),
+    std(0xffe27a, { emissive: srgb(0xffc233), emissiveIntensity: 1.0, roughness: 0.3 })
   );
   bulb.position.y = 0.66;
   antenna.add(bulb);
+  var bulbLight = new THREE.PointLight(0xffd36a, 0.9, 4);
+  bulb.add(bulbLight);
 
-  // eyes
+  // eyes: glossy white, amber iris, shine, eyelids that blink
+  var irisTex = canvasTex(128, 128, function (g, w, h) {
+    var rg = g.createRadialGradient(64, 64, 0, 64, 64, 64);
+    rg.addColorStop(0, '#000'); rg.addColorStop(0.28, '#000');
+    rg.addColorStop(0.33, '#6b3a0a'); rg.addColorStop(0.55, '#f0a22a');
+    rg.addColorStop(0.9, '#8a4b10'); rg.addColorStop(1, '#2a1405');
+    g.fillStyle = rg; g.fillRect(0, 0, w, h);
+  }, true);
   var eyes = [];
   [-1, 1].forEach(function (s) {
     var grp = new THREE.Group();
-    grp.position.set(s * 0.45, 0.1, 0.84);
-    var white = ball(0.3, 0xffffff, 1, 1.1, 0.55);
+    grp.position.set(s * 0.45, 0.12, 0.85);
+    var white = ball(0.3, std(0xfaf6f0, { roughness: 0.18 }), 1, 1.1, 0.55);
     grp.add(white);
-    var pupil = ball(0.16, 0x1d1633, 1, 1.1, 0.5);
-    pupil.position.z = 0.12;
-    grp.add(pupil);
-    var shine = ball(0.05, 0xffffff, 1, 1, 1);
-    shine.position.set(0.05, 0.07, 0.2);
-    pupil.add(shine);
+    var iris = new THREE.Mesh(new THREE.CircleGeometry(0.19, 32), std(0xffffff, { map: irisTex, roughness: 0.25 }));
+    iris.position.z = 0.172;
+    grp.add(iris);
+    var shine = new THREE.Mesh(new THREE.CircleGeometry(0.045, 12), new THREE.MeshBasicMaterial({ color: 0xffffff }));
+    shine.position.set(0.07, 0.09, 0.0);
+    iris.add(shine); shine.position.z = 0.004;
+    var shine2 = new THREE.Mesh(new THREE.CircleGeometry(0.02, 10), new THREE.MeshBasicMaterial({ color: 0xffffff }));
+    shine2.position.set(-0.06, -0.07, 0.004);
+    iris.add(shine2);
+
+    var lidPivot = new THREE.Group();
+    var lid = new THREE.Mesh(new THREE.SphereGeometry(0.325, 28, 12, 0, Math.PI * 2, 0, Math.PI * 0.42), skinMat);
+    lid.scale.set(1, 1.12, 0.62);
+    lidPivot.add(lid);
+    lidPivot.rotation.z = s * 0.18;
+    grp.add(lidPivot);
+
     head.add(grp);
-    eyes.push({ grp: grp, pupil: pupil });
+    eyes.push({ grp: grp, iris: iris, lid: lidPivot, tilt: s * 0.18 });
   });
 
-  // cheeks
+  // cheeks, nose, mouth, fang
   [-1, 1].forEach(function (s) {
-    var c = ball(0.17, PINK, 1.2, 0.7, 0.3);
-    c.position.set(s * 0.78, -0.25, 0.74);
+    var c = ball(0.17, std(PINK, { roughness: 0.8 }), 1.2, 0.7, 0.3);
+    c.position.set(s * 0.8, -0.25, 0.72);
     c.rotation.y = s * 0.6;
     head.add(c);
+    var n = ball(0.03, std(0x5a3b9a), 1, 1, 1);
+    n.position.set(s * 0.07, -0.02, 1.03);
+    head.add(n);
   });
-
-  // mouth (smile arc)
-  var mouth = new THREE.Mesh(
-    new THREE.TorusGeometry(0.3, 0.04, 10, 28, Math.PI),
-    mat(0x3a2468)
-  );
+  var mouth = new THREE.Mesh(new THREE.TorusGeometry(0.3, 0.04, 12, 32, Math.PI), std(0x3a2468));
   mouth.rotation.z = Math.PI;
   mouth.position.set(0, -0.2, 0.97);
   head.add(mouth);
-
-  // little fang
-  var fang = new THREE.Mesh(new THREE.ConeGeometry(0.045, 0.1, 10), mat(0xffffff));
+  var fang = new THREE.Mesh(new THREE.ConeGeometry(0.045, 0.1, 12), std(0xffffff, { roughness: 0.3 }));
   fang.rotation.x = Math.PI;
   fang.position.set(0.14, -0.34, 0.985);
   head.add(fang);
@@ -178,40 +291,125 @@
   function makeArm(side) {
     var pivot = new THREE.Group();
     pivot.position.set(side * 1.0, 1.55, 0.15);
-    var upper = ball(0.28, PURPLE, 1, 2.0, 1);
+    var upper = ball(0.28, skinMat, 1, 2.0, 1);
     upper.position.y = -0.45;
-    pivot.add(upper);
-    var hand = ball(0.24, PURPLE, 1, 1, 1);
+    pivot.add(upper); fuzz(upper, PURPLE);
+    var hand = ball(0.25, skinMat, 1, 1, 1);
     hand.position.y = -0.95;
-    pivot.add(hand);
-    hop.add(pivot);
+    pivot.add(hand); fuzz(hand, PURPLE);
+    rig.add(pivot);
     return pivot;
   }
   var armL = makeArm(-1);
   var armR = makeArm(1);
 
-  // ---------- wings ----------
-  function wingShape() {
+  // ---------- flag pole + banner (held in right hand) ----------
+  var holder = new THREE.Group();     // counter-rotated so the pole stays upright
+  holder.position.set(0, -0.95, 0);
+  armR.add(holder);
+  var goldMat = std(GOLD, { roughness: 0.3, metalness: 0.6 });
+  var pole = new THREE.Mesh(new THREE.CylinderGeometry(0.045, 0.045, 3.0, 12), goldMat);
+  pole.position.y = 1.1;
+  holder.add(pole);
+  var finial = new THREE.Mesh(new THREE.SphereGeometry(0.09, 16, 12), goldMat);
+  finial.position.y = 2.66;
+  holder.add(finial);
+  var bar = new THREE.Mesh(new THREE.CylinderGeometry(0.03, 0.03, 1.8, 10), goldMat);
+  bar.rotation.z = Math.PI / 2;
+  bar.position.set(0.85, 2.35, 0);
+  holder.add(bar);
+
+  function fitText(g, text, font, maxW, size) {
+    do { g.font = font.replace('{s}', size); size -= 2; } while (g.measureText(text).width > maxW && size > 12);
+    return size;
+  }
+  var bannerTexFront = canvasTex(512, 736, function (g, w, h) {
+    function shape() {
+      g.beginPath(); g.moveTo(0, 0); g.lineTo(w, 0); g.lineTo(w, h);
+      g.lineTo(w / 2, h - 110); g.lineTo(0, h); g.closePath();
+    }
+    shape(); g.save(); g.clip();
+    var gr = g.createLinearGradient(0, 0, 0, h);
+    gr.addColorStop(0, '#5a3bd0'); gr.addColorStop(1, '#2a1a6b');
+    g.fillStyle = gr; g.fillRect(0, 0, w, h);
+    g.restore();
+    shape(); g.strokeStyle = '#ffd166'; g.lineWidth = 26; g.stroke();
+    g.textAlign = 'center'; g.textBaseline = 'middle';
+    // star
+    g.fillStyle = '#ffd166'; g.beginPath();
+    for (var i = 0; i < 10; i++) {
+      var r = i % 2 ? 16 : 36, a = -Math.PI / 2 + i * Math.PI / 5;
+      g.lineTo(w / 2 + Math.cos(a) * r, 105 + Math.sin(a) * r);
+    }
+    g.closePath(); g.fill();
+    g.fillStyle = '#fff';
+    fitText(g, 'WELCOME', 'bold {s}px Georgia, serif', 400, 96); g.fillText('WELCOME', w / 2, 200);
+    fitText(g, 'VISITOR', 'bold {s}px Georgia, serif', 400, 96); g.fillText('VISITOR', w / 2, 300);
+    g.fillStyle = '#ffd166'; g.fillRect(w / 2 - 80, 352, 160, 5);
+    fitText(g, 'to the', 'italic {s}px Georgia, serif', 300, 62); g.fillText("to the", w / 2, 412);
+    g.fillStyle = '#fff';
+    fitText(g, 'GabrielC', 'bold {s}px Georgia, serif', 380, 84); g.fillText('GabrielC', w / 2, 495);
+    g.fillStyle = '#ffd166';
+    fitText(g, 'site', 'italic {s}px Georgia, serif', 300, 70); g.fillText("site", w / 2, 575);
+  }, true);
+  var bannerTexBack = bannerTexFront.clone();
+  bannerTexBack.needsUpdate = true;
+  bannerTexBack.wrapS = THREE.RepeatWrapping;
+  bannerTexBack.repeat.x = -1; bannerTexBack.offset.x = 1;
+
+  var BW = 1.6, BH = 2.3;
+  var bannerGeo = new THREE.PlaneGeometry(BW, BH, 12, 24);
+  var bannerBase = bannerGeo.attributes.position.array.slice();
+  var bannerFront = new THREE.Mesh(bannerGeo, new THREE.MeshStandardMaterial({
+    map: bannerTexFront, alphaTest: 0.5, roughness: 0.75, side: THREE.FrontSide }));
+  var bannerBack = new THREE.Mesh(bannerGeo, new THREE.MeshStandardMaterial({
+    map: bannerTexBack, alphaTest: 0.5, roughness: 0.75, side: THREE.BackSide }));
+  var banner = new THREE.Group();
+  banner.add(bannerFront); banner.add(bannerBack);
+  banner.position.set(0.9, 2.32 - BH / 2, 0);
+  holder.add(banner);
+
+  // ---------- wings (bat style with bones) ----------
+  var WT = [[1.7, 1.1], [1.55, 0.2], [1.0, -0.45], [0.35, -0.7]];
+  function wingGeometry() {
     var s = new THREE.Shape();
     s.moveTo(0, 0);
-    s.quadraticCurveTo(0.5, 0.9, 1.5, 0.75);
-    s.quadraticCurveTo(1.25, 0.45, 1.4, 0.15);
-    s.quadraticCurveTo(1.0, 0.2, 0.95, -0.2);
-    s.quadraticCurveTo(0.55, 0.0, 0.4, -0.45);
-    s.quadraticCurveTo(0.2, -0.2, 0, 0);
-    return new THREE.ShapeGeometry(s, 12);
+    s.quadraticCurveTo(0.6, 1.05, 1.7, 1.1);
+    s.quadraticCurveTo(1.35, 0.75, 1.55, 0.2);
+    s.quadraticCurveTo(1.15, 0.15, 1.0, -0.45);
+    s.quadraticCurveTo(0.7, -0.2, 0.35, -0.7);
+    s.quadraticCurveTo(0.2, -0.3, 0, 0);
+    var geo = new THREE.ShapeGeometry(s, 14);
+    var pos = geo.attributes.position, col = [];
+    var c1 = srgb(0x7a2a55), c2 = srgb(WING);
+    for (var i = 0; i < pos.count; i++) {
+      var d = Math.min(1, Math.hypot(pos.getX(i), pos.getY(i)) / 1.7);
+      var c = c1.clone().lerp(c2, d);
+      col.push(c.r, c.g, c.b);
+    }
+    geo.setAttribute('color', new THREE.Float32BufferAttribute(col, 3));
+    return geo;
   }
-  var wingGeo = wingShape();
+  var wingGeo = wingGeometry();
+  var boneMat = std(0x5a2048, { roughness: 0.6 });
   function makeWing(side) {
     var pivot = new THREE.Group();
     pivot.position.set(side * 0.55, 1.65, -0.8);
+    var flip = new THREE.Group();
+    flip.scale.x = side;
     var m = new THREE.Mesh(wingGeo, new THREE.MeshStandardMaterial({
-      color: WING, roughness: 0.6, side: THREE.DoubleSide
-    }));
-    m.scale.x = side;
-    pivot.add(m);
-    pivot.userData.side = side;
-    hop.add(pivot);
+      vertexColors: true, roughness: 0.6, side: THREE.DoubleSide }));
+    flip.add(m);
+    WT.forEach(function (t) {
+      var a = new THREE.Vector3(0, 0, 0.005), b = new THREE.Vector3(t[0], t[1], 0.005);
+      var len = a.distanceTo(b);
+      var bone = new THREE.Mesh(new THREE.CylinderGeometry(0.018, 0.03, len, 8), boneMat);
+      bone.position.copy(a.clone().add(b).multiplyScalar(0.5));
+      bone.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), b.clone().sub(a).normalize());
+      flip.add(bone);
+    });
+    pivot.add(flip);
+    rig.add(pivot);
     return pivot;
   }
   var wingL = makeWing(-1);
@@ -221,32 +419,29 @@
   var tail = [];
   var tailRoot = new THREE.Group();
   tailRoot.position.set(0, 0.6, -0.85);
-  hop.add(tailRoot);
+  rig.add(tailRoot);
   var prev = tailRoot;
   for (var i = 0; i < 6; i++) {
     var seg = new THREE.Group();
     seg.position.set(0, 0, i === 0 ? 0 : -0.28);
-    var r = 0.2 - i * 0.022;
-    var b = ball(r, i === 5 ? ORANGE : PURPLE, 1, 1, 1);
+    var b = ball(0.2 - i * 0.022, i === 5 ? std(ORANGE) : skinMat, 1, 1, 1);
     seg.add(b);
     prev.add(seg);
     tail.push(seg);
     prev = seg;
   }
-  // tail tip spade
-  var tip = new THREE.Mesh(new THREE.ConeGeometry(0.2, 0.34, 4), mat(ORANGE));
+  var tip = new THREE.Mesh(new THREE.ConeGeometry(0.2, 0.34, 4), std(ORANGE, { roughness: 0.4 }));
   tip.rotation.x = -Math.PI / 2;
   tip.position.z = -0.3;
   tail[5].add(tip);
 
+  rig.traverse(function (o) { if (o.isMesh && !o.userData.noShadow) o.castShadow = true; });
+
   // ---------- input ----------
   var pointer = { x: 0, y: 0 };
-  var dragging = false, lastX = 0, moved = 0, velY = 0;
-  var spin = 0;
-  var jumpT = -1;
-  var lastInteract = 0;
+  var dragging = false, lastX = 0, moved = 0, velY = 0, spin = 0;
+  var loopT = -1, lastInteract = 0;
   var el = renderer.domElement;
-
   function setPointer(e) {
     var r = el.getBoundingClientRect();
     pointer.x = ((e.clientX - r.left) / r.width) * 2 - 1;
@@ -259,32 +454,30 @@
     setPointer(e);
   });
   el.addEventListener('pointermove', function (e) {
-    setPointer(e);
-    lastInteract = performance.now();
+    setPointer(e); lastInteract = performance.now();
     if (!dragging) return;
-    var dx = e.clientX - lastX;
-    lastX = e.clientX;
-    moved += Math.abs(dx);
-    velY = dx * 0.01;
-    spin += velY;
+    var dx = e.clientX - lastX; lastX = e.clientX;
+    moved += Math.abs(dx); velY = dx * 0.01; spin += velY;
   });
   function release() {
     if (!dragging) return;
-    dragging = false;
-    el.classList.remove('drag');
-    if (moved < 5) jumpT = 0; // click = jump
+    dragging = false; el.classList.remove('drag');
+    if (moved < 5 && loopT < 0) loopT = 0; // click = loop-the-loop
   }
   el.addEventListener('pointerup', release);
   el.addEventListener('pointercancel', release);
   window.addEventListener('mousemove', function (e) { setPointer(e); lastInteract = performance.now(); });
 
-  // ---------- resize ----------
+  // ---------- camera fit (keeps character + banner + flight path in frame) ----------
+  var CX = 0.3, CY = 3.0, FW = 8.4, FH = 7.8;
   function resize() {
     var w = window.innerWidth || 320, h = window.innerHeight || 400;
     renderer.setSize(w, h, false);
     camera.aspect = w / h;
-    // keep character fully visible on narrow frames
-    camera.position.z = camera.aspect < 0.9 ? 12.5 / Math.min(1, camera.aspect / 0.8) * 0.98 : 12.5;
+    var tn = Math.tan(THREE.MathUtils.degToRad(camera.fov / 2));
+    var dist = Math.max(FH / 2 / tn, FW / 2 / (tn * camera.aspect));
+    camera.position.set(CX, CY + 0.6, dist);
+    camera.lookAt(CX, CY, 0);
     camera.updateProjectionMatrix();
   }
   window.addEventListener('resize', resize);
@@ -292,97 +485,108 @@
 
   // ---------- animation ----------
   var clock = new THREE.Clock();
-  var nextBlink = 2, blink = 0;
-  var curLookX = 0, curLookY = 0;
+  var nextBlink = 2, blink = 0, curLookX = 0, curLookY = 0;
+  var bankZ = 0, leanX = 0, yaw = 0;
+  function clamp(v, a, b) { return Math.max(a, Math.min(b, v)); }
+  function ease(x) { return x < 0.5 ? 2 * x * x : 1 - Math.pow(-2 * x + 2, 2) / 2; }
 
   function frame() {
     var dt = Math.min(clock.getDelta(), 0.05);
     var t = clock.elapsedTime;
 
-    // rotation: inertia, then ease back to facing front
+    // flight path (smooth figure-eight with depth) and its velocity
+    var w1 = 0.55;
+    var px = -0.9 + Math.sin(t * w1) * 0.85;
+    var py = 1.1 + Math.sin(t * 1.1) * 0.45 + Math.sin(t * 0.37) * 0.2;
+    var pz = Math.cos(t * w1) * 1.2;
+    var vx = Math.cos(t * w1) * 0.85 * w1;
+    var vy = Math.cos(t * 1.1) * 0.495 + Math.cos(t * 0.37) * 0.074;
+    var vz = -Math.sin(t * w1) * 1.2 * w1;
+    var speed = Math.sqrt(vx * vx + vy * vy + vz * vz);
+    fly.position.set(px, py, pz);
+
+    // spin from dragging (inertia, then eases back)
     if (!dragging) {
-      spin += velY;
-      velY *= 0.94;
-      var twoPi = Math.PI * 2;
-      var wrapped = ((spin + Math.PI) % twoPi + twoPi) % twoPi - Math.PI;
-      spin = spin - (spin - wrapped);
+      spin += velY; velY *= 0.94;
       if (Math.abs(velY) < 0.002) spin += (0 - spin) * Math.min(1, dt * 1.6);
     }
-    root.rotation.y = spin + Math.sin(t * 0.6) * 0.12;
+    yaw += (clamp(vx * 0.9, -0.5, 0.5) - yaw) * Math.min(1, dt * 3);
+    fly.rotation.y = yaw + spin;
 
-    // breathing + bob
+    bankZ += (-vx * 0.5 - bankZ) * Math.min(1, dt * 3);
+    leanX += ((0.16 - vy * 0.12) - leanX) * Math.min(1, dt * 3);
+    var loopRot = 0;
+    if (loopT >= 0) {
+      loopT += dt / 1.2;
+      if (loopT >= 1) loopT = -1;
+      else loopRot = -ease(loopT) * Math.PI * 2;
+    }
+    tilt.rotation.set(leanX + loopRot, 0, bankZ);
+
+    // breathing
     var breathe = Math.sin(t * 2.2);
     body.scale.set(1.0 + breathe * 0.012, 1.05 + breathe * 0.02, 0.9 + breathe * 0.012);
-    var bob = Math.sin(t * 2.2) * 0.04;
 
-    // jump
-    var jumpY = 0, squash = 0;
-    if (jumpT >= 0) {
-      jumpT += dt / 0.7;
-      if (jumpT >= 1) { jumpT = -1; }
-      else {
-        jumpY = Math.sin(jumpT * Math.PI) * 1.1;
-        squash = jumpT < 0.12 ? -(0.12 - jumpT) * 1.2 : 0;
-      }
-    }
-    hop.position.y = bob + jumpY;
-    hop.scale.y = 1 + squash;
-    shadow.scale.setScalar(1 - jumpY * 0.2);
-
-    // head follows pointer
+    // head follows pointer (or looks around when idle)
     var tx = pointer.x, ty = pointer.y;
-    if (performance.now() - lastInteract > 4000) { // idle: look around gently
-      tx = Math.sin(t * 0.7) * 0.5; ty = Math.sin(t * 0.5) * 0.2;
-    }
+    if (performance.now() - lastInteract > 4000) { tx = Math.sin(t * 0.7) * 0.5; ty = Math.sin(t * 0.5) * 0.2; }
     curLookX += (tx - curLookX) * Math.min(1, dt * 5);
     curLookY += (ty - curLookY) * Math.min(1, dt * 5);
     head.rotation.y = curLookX * 0.45;
-    head.rotation.x = curLookY * 0.25;
+    head.rotation.x = curLookY * 0.25 - leanX * 0.5;
     head.rotation.z = Math.sin(t * 1.3) * 0.04;
     eyes.forEach(function (e) {
-      e.pupil.position.x = curLookX * 0.09;
-      e.pupil.position.y = -curLookY * 0.07;
+      e.iris.position.x = curLookX * 0.07;
+      e.iris.position.y = -curLookY * 0.05;
     });
 
-    // blink
-    if (t > nextBlink && blink === 0) { blink = 0.0001; }
+    // blink with eyelids
+    if (t > nextBlink && blink === 0) blink = 0.0001;
+    var closed = 0;
     if (blink > 0) {
-      blink += dt / 0.16;
-      var k = blink < 0.5 ? 1 - blink * 2 : (blink - 0.5) * 2;
-      var sy = Math.max(0.08, k);
-      eyes.forEach(function (e) { e.grp.scale.y = sy; });
-      if (blink >= 1) {
-        blink = 0;
-        eyes.forEach(function (e) { e.grp.scale.y = 1; });
-        nextBlink = t + 1.8 + Math.random() * 3;
-      }
+      blink += dt / 0.2;
+      closed = blink < 0.5 ? blink * 2 : (1 - blink) * 2;
+      if (blink >= 1) { blink = 0; closed = 0; nextBlink = t + 1.8 + Math.random() * 3; }
     }
+    eyes.forEach(function (e) { e.lid.rotation.x = 0.28 + closed * 1.15; });
 
-    // antenna sway + glow
-    antenna.rotation.z = Math.sin(t * 3) * 0.12 + curLookX * -0.1;
+    // antenna + glow
+    antenna.rotation.z = Math.sin(t * 3) * 0.12 - vx * 0.4;
     antenna.rotation.x = Math.cos(t * 2.4) * 0.08;
-    bulb.material.emissiveIntensity = 0.7 + Math.sin(t * 4) * 0.3;
+    var glow = 0.75 + Math.sin(t * 4) * 0.25;
+    bulb.material.emissiveIntensity = glow;
+    bulbLight.intensity = 0.6 + glow * 0.5;
 
-    // arms: left idle swing, right waves (bigger wave during jump)
-    armL.rotation.z = -0.25 + Math.sin(t * 2.2 + 1) * 0.05;
-    var wave = jumpT >= 0 ? 1 : 0;
-    var waveBase = 2.5 + (jumpT >= 0 ? 0 : Math.sin(t * 0.5) * 0); // raised arm angle
-    var idleWave = Math.max(0, Math.sin(t * 0.35)); // occasional wave
-    var raise = Math.max(wave, idleWave > 0.6 ? 1 : 0);
-    var targetZ = raise ? 2.3 + Math.sin(t * 9) * 0.35 : 0.25 + Math.sin(t * 2.2) * 0.05;
-    armR.rotation.z += (targetZ - armR.rotation.z) * Math.min(1, dt * 8);
+    // arms: right holds the flag up, left swings out
+    armR.rotation.z = 1.95 + Math.sin(t * 3.0) * 0.06;
+    holder.rotation.z = -armR.rotation.z;
+    holder.rotation.x = Math.sin(t * 2.0) * 0.03;
+    armL.rotation.z = -(0.95 + Math.sin(t * 2.6) * 0.16);
 
-    // wings flap
-    var flap = jumpT >= 0 ? Math.sin(t * 28) * 0.6 : Math.sin(t * 5) * 0.12;
-    wingL.rotation.y = 0.5 + flap;
-    wingR.rotation.y = -0.5 - flap;
-    wingL.rotation.z = 0.1; wingR.rotation.z = -0.1;
-
-    // tail whip
+    // wings flap, feet dangle, tail streams
+    var flap = Math.sin(t * 18);
+    wingR.rotation.z = 0.3 + flap * 0.5;
+    wingL.rotation.z = -(0.3 + flap * 0.5);
+    wingR.rotation.y = -0.5 - flap * 0.18;
+    wingL.rotation.y = 0.5 + flap * 0.18;
+    feet.forEach(function (f, i) { f.rotation.x = 0.3 + Math.sin(t * 3 + i * 1.6) * 0.16; });
     tail.forEach(function (s, i) {
-      s.rotation.y = Math.sin(t * 3 - i * 0.6) * 0.22;
-      s.rotation.x = Math.sin(t * 2.1 - i * 0.5) * 0.08 + (i === 0 ? 0.5 : 0.05);
+      s.rotation.y = Math.sin(t * 3.2 - i * 0.6) * (0.2 + speed * 0.15);
+      s.rotation.x = Math.sin(t * 2.1 - i * 0.5) * 0.08 + (i === 0 ? 0.4 : 0.05);
     });
+
+    // banner cloth: wave grows toward the free edge and with speed
+    var pos = bannerGeo.attributes.position, amp = 0.07 + speed * 0.12;
+    for (var i = 0; i < pos.count; i++) {
+      var x = bannerBase[i * 3], y = bannerBase[i * 3 + 1];
+      var u = (BH / 2 - y) / BH;            // 0 at the bar, 1 at the tail
+      var side = (x + BW / 2) / BW;         // 0 at the pole, 1 at the far edge
+      var wv = Math.sin(t * 5 + y * 3.2 + x * 2.0) * amp * (0.35 + side * 0.65) * (0.2 + u);
+      pos.setZ(i, wv);
+      pos.setX(i, x + Math.sin(t * 2.3 + u * 2) * 0.05 * u);
+    }
+    pos.needsUpdate = true;
+    bannerGeo.computeVertexNormals();
 
     renderer.render(scene, camera);
     requestAnimationFrame(frame);
