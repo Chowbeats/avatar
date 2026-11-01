@@ -1,1 +1,394 @@
-hello
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Avatar</title>
+<style>
+  html, body { margin: 0; height: 100%; background: transparent; overflow: hidden; }
+  canvas { display: block; width: 100%; height: 100%; touch-action: none; cursor: grab; }
+  canvas.drag { cursor: grabbing; }
+</style>
+</head>
+<body>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script>
+(function () {
+  var renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+  renderer.setClearColor(0x000000, 0);
+  document.body.appendChild(renderer.domElement);
+
+  var scene = new THREE.Scene();
+  var camera = new THREE.PerspectiveCamera(35, 1, 0.1, 100);
+  camera.position.set(0, 2.6, 12.5);
+  camera.lookAt(0, 2.3, 0);
+
+  // ---------- lights ----------
+  scene.add(new THREE.HemisphereLight(0xffffff, 0x9a86c8, 0.85));
+  var key = new THREE.DirectionalLight(0xffffff, 0.8);
+  key.position.set(3, 6, 6);
+  scene.add(key);
+  var rim = new THREE.PointLight(0xff9a6b, 0.6, 20);
+  rim.position.set(-4, 3, -4);
+  scene.add(rim);
+
+  // ---------- helpers ----------
+  function mat(color, extra) {
+    var o = { color: color, roughness: 0.55, metalness: 0.0 };
+    if (extra) for (var k in extra) o[k] = extra[k];
+    return new THREE.MeshStandardMaterial(o);
+  }
+  function ball(r, color, sx, sy, sz) {
+    var m = new THREE.Mesh(new THREE.SphereGeometry(r, 32, 24), mat(color));
+    m.scale.set(sx || 1, sy || 1, sz || 1);
+    return m;
+  }
+
+  var PURPLE = 0x9a78e0, BELLY = 0xd9c8ff, ORANGE = 0xffa83a, WING = 0xff7a59, PINK = 0xff9fb8;
+
+  var root = new THREE.Group();   // spins with drag
+  var hop = new THREE.Group();    // jump + bob
+  root.add(hop);
+  scene.add(root);
+
+  // ---------- soft ground shadow ----------
+  var sc = document.createElement('canvas');
+  sc.width = sc.height = 128;
+  var sx = sc.getContext('2d');
+  var g = sx.createRadialGradient(64, 64, 4, 64, 64, 62);
+  g.addColorStop(0, 'rgba(40,20,80,0.45)');
+  g.addColorStop(1, 'rgba(40,20,80,0)');
+  sx.fillStyle = g;
+  sx.fillRect(0, 0, 128, 128);
+  var shadow = new THREE.Mesh(
+    new THREE.PlaneGeometry(3.4, 3.4),
+    new THREE.MeshBasicMaterial({ map: new THREE.CanvasTexture(sc), transparent: true, depthWrite: false })
+  );
+  shadow.rotation.x = -Math.PI / 2;
+  shadow.position.y = 0.01;
+  root.add(shadow);
+
+  // ---------- body ----------
+  var body = ball(1, PURPLE, 1.0, 1.05, 0.9);
+  body.position.y = 1.0;
+  hop.add(body);
+
+  var belly = ball(1, BELLY, 0.62, 0.7, 0.3);
+  belly.position.set(0, 0.95, 0.78);
+  hop.add(belly);
+
+  // feet
+  var feet = [];
+  [-1, 1].forEach(function (s) {
+    var f = ball(0.38, PURPLE, 1.1, 0.55, 1.3);
+    f.position.set(s * 0.5, 0.2, 0.35);
+    hop.add(f);
+    [-1, 0, 1].forEach(function (t) {
+      var toe = ball(0.09, ORANGE, 1, 1, 1.2);
+      toe.position.set(s * 0.5 + t * 0.2, 0.15, 0.82);
+      hop.add(toe);
+    });
+    feet.push(f);
+  });
+
+  // ---------- head ----------
+  var head = new THREE.Group();
+  head.position.set(0, 2.45, 0.05);
+  hop.add(head);
+
+  var skull = ball(1.05, PURPLE, 1.12, 1.0, 1.0);
+  head.add(skull);
+
+  // horns
+  [-1, 1].forEach(function (s) {
+    var h = new THREE.Mesh(new THREE.ConeGeometry(0.2, 0.75, 20), mat(ORANGE, { roughness: 0.4 }));
+    h.position.set(s * 0.62, 0.95, 0.05);
+    h.rotation.z = -s * 0.45;
+    head.add(h);
+  });
+
+  // ears
+  [-1, 1].forEach(function (s) {
+    var e = ball(0.26, PURPLE, 0.5, 1.0, 0.8);
+    e.position.set(s * 1.18, 0.1, -0.05);
+    e.rotation.z = -s * 0.3;
+    head.add(e);
+    var inner = ball(0.17, PINK, 0.35, 0.8, 0.5);
+    inner.position.set(s * 1.24, 0.1, 0.0);
+    inner.rotation.z = -s * 0.3;
+    head.add(inner);
+  });
+
+  // antenna
+  var antenna = new THREE.Group();
+  antenna.position.set(0, 1.0, 0);
+  head.add(antenna);
+  var stalk = new THREE.Mesh(new THREE.CylinderGeometry(0.035, 0.05, 0.6, 10), mat(0x6a4fb5));
+  stalk.position.y = 0.3;
+  antenna.add(stalk);
+  var bulb = new THREE.Mesh(
+    new THREE.SphereGeometry(0.14, 20, 16),
+    mat(0xffe27a, { emissive: 0xffc233, emissiveIntensity: 0.9, roughness: 0.3 })
+  );
+  bulb.position.y = 0.66;
+  antenna.add(bulb);
+
+  // eyes
+  var eyes = [];
+  [-1, 1].forEach(function (s) {
+    var grp = new THREE.Group();
+    grp.position.set(s * 0.45, 0.1, 0.84);
+    var white = ball(0.3, 0xffffff, 1, 1.1, 0.55);
+    grp.add(white);
+    var pupil = ball(0.16, 0x1d1633, 1, 1.1, 0.5);
+    pupil.position.z = 0.12;
+    grp.add(pupil);
+    var shine = ball(0.05, 0xffffff, 1, 1, 1);
+    shine.position.set(0.05, 0.07, 0.2);
+    pupil.add(shine);
+    head.add(grp);
+    eyes.push({ grp: grp, pupil: pupil });
+  });
+
+  // cheeks
+  [-1, 1].forEach(function (s) {
+    var c = ball(0.17, PINK, 1.2, 0.7, 0.3);
+    c.position.set(s * 0.78, -0.25, 0.74);
+    c.rotation.y = s * 0.6;
+    head.add(c);
+  });
+
+  // mouth (smile arc)
+  var mouth = new THREE.Mesh(
+    new THREE.TorusGeometry(0.3, 0.04, 10, 28, Math.PI),
+    mat(0x3a2468)
+  );
+  mouth.rotation.z = Math.PI;
+  mouth.position.set(0, -0.2, 0.97);
+  head.add(mouth);
+
+  // little fang
+  var fang = new THREE.Mesh(new THREE.ConeGeometry(0.045, 0.1, 10), mat(0xffffff));
+  fang.rotation.x = Math.PI;
+  fang.position.set(0.14, -0.34, 0.985);
+  head.add(fang);
+
+  // ---------- arms ----------
+  function makeArm(side) {
+    var pivot = new THREE.Group();
+    pivot.position.set(side * 1.0, 1.55, 0.15);
+    var upper = ball(0.28, PURPLE, 1, 2.0, 1);
+    upper.position.y = -0.45;
+    pivot.add(upper);
+    var hand = ball(0.24, PURPLE, 1, 1, 1);
+    hand.position.y = -0.95;
+    pivot.add(hand);
+    hop.add(pivot);
+    return pivot;
+  }
+  var armL = makeArm(-1);
+  var armR = makeArm(1);
+
+  // ---------- wings ----------
+  function wingShape() {
+    var s = new THREE.Shape();
+    s.moveTo(0, 0);
+    s.quadraticCurveTo(0.5, 0.9, 1.5, 0.75);
+    s.quadraticCurveTo(1.25, 0.45, 1.4, 0.15);
+    s.quadraticCurveTo(1.0, 0.2, 0.95, -0.2);
+    s.quadraticCurveTo(0.55, 0.0, 0.4, -0.45);
+    s.quadraticCurveTo(0.2, -0.2, 0, 0);
+    return new THREE.ShapeGeometry(s, 12);
+  }
+  var wingGeo = wingShape();
+  function makeWing(side) {
+    var pivot = new THREE.Group();
+    pivot.position.set(side * 0.55, 1.65, -0.8);
+    var m = new THREE.Mesh(wingGeo, new THREE.MeshStandardMaterial({
+      color: WING, roughness: 0.6, side: THREE.DoubleSide
+    }));
+    m.scale.x = side;
+    pivot.add(m);
+    pivot.userData.side = side;
+    hop.add(pivot);
+    return pivot;
+  }
+  var wingL = makeWing(-1);
+  var wingR = makeWing(1);
+
+  // ---------- tail ----------
+  var tail = [];
+  var tailRoot = new THREE.Group();
+  tailRoot.position.set(0, 0.6, -0.85);
+  hop.add(tailRoot);
+  var prev = tailRoot;
+  for (var i = 0; i < 6; i++) {
+    var seg = new THREE.Group();
+    seg.position.set(0, 0, i === 0 ? 0 : -0.28);
+    var r = 0.2 - i * 0.022;
+    var b = ball(r, i === 5 ? ORANGE : PURPLE, 1, 1, 1);
+    seg.add(b);
+    prev.add(seg);
+    tail.push(seg);
+    prev = seg;
+  }
+  // tail tip spade
+  var tip = new THREE.Mesh(new THREE.ConeGeometry(0.2, 0.34, 4), mat(ORANGE));
+  tip.rotation.x = -Math.PI / 2;
+  tip.position.z = -0.3;
+  tail[5].add(tip);
+
+  // ---------- input ----------
+  var pointer = { x: 0, y: 0 };
+  var dragging = false, lastX = 0, moved = 0, velY = 0;
+  var spin = 0;
+  var jumpT = -1;
+  var lastInteract = 0;
+  var el = renderer.domElement;
+
+  function setPointer(e) {
+    var r = el.getBoundingClientRect();
+    pointer.x = ((e.clientX - r.left) / r.width) * 2 - 1;
+    pointer.y = ((e.clientY - r.top) / r.height) * 2 - 1;
+  }
+  el.addEventListener('pointerdown', function (e) {
+    dragging = true; lastX = e.clientX; moved = 0; velY = 0;
+    el.classList.add('drag');
+    try { el.setPointerCapture(e.pointerId); } catch (err) {}
+    setPointer(e);
+  });
+  el.addEventListener('pointermove', function (e) {
+    setPointer(e);
+    lastInteract = performance.now();
+    if (!dragging) return;
+    var dx = e.clientX - lastX;
+    lastX = e.clientX;
+    moved += Math.abs(dx);
+    velY = dx * 0.01;
+    spin += velY;
+  });
+  function release() {
+    if (!dragging) return;
+    dragging = false;
+    el.classList.remove('drag');
+    if (moved < 5) jumpT = 0; // click = jump
+  }
+  el.addEventListener('pointerup', release);
+  el.addEventListener('pointercancel', release);
+  window.addEventListener('mousemove', function (e) { setPointer(e); lastInteract = performance.now(); });
+
+  // ---------- resize ----------
+  function resize() {
+    var w = window.innerWidth || 320, h = window.innerHeight || 400;
+    renderer.setSize(w, h, false);
+    camera.aspect = w / h;
+    // keep character fully visible on narrow frames
+    camera.position.z = camera.aspect < 0.9 ? 12.5 / Math.min(1, camera.aspect / 0.8) * 0.98 : 12.5;
+    camera.updateProjectionMatrix();
+  }
+  window.addEventListener('resize', resize);
+  resize();
+
+  // ---------- animation ----------
+  var clock = new THREE.Clock();
+  var nextBlink = 2, blink = 0;
+  var curLookX = 0, curLookY = 0;
+
+  function frame() {
+    var dt = Math.min(clock.getDelta(), 0.05);
+    var t = clock.elapsedTime;
+
+    // rotation: inertia, then ease back to facing front
+    if (!dragging) {
+      spin += velY;
+      velY *= 0.94;
+      var twoPi = Math.PI * 2;
+      var wrapped = ((spin + Math.PI) % twoPi + twoPi) % twoPi - Math.PI;
+      spin = spin - (spin - wrapped);
+      if (Math.abs(velY) < 0.002) spin += (0 - spin) * Math.min(1, dt * 1.6);
+    }
+    root.rotation.y = spin + Math.sin(t * 0.6) * 0.12;
+
+    // breathing + bob
+    var breathe = Math.sin(t * 2.2);
+    body.scale.set(1.0 + breathe * 0.012, 1.05 + breathe * 0.02, 0.9 + breathe * 0.012);
+    var bob = Math.sin(t * 2.2) * 0.04;
+
+    // jump
+    var jumpY = 0, squash = 0;
+    if (jumpT >= 0) {
+      jumpT += dt / 0.7;
+      if (jumpT >= 1) { jumpT = -1; }
+      else {
+        jumpY = Math.sin(jumpT * Math.PI) * 1.1;
+        squash = jumpT < 0.12 ? -(0.12 - jumpT) * 1.2 : 0;
+      }
+    }
+    hop.position.y = bob + jumpY;
+    hop.scale.y = 1 + squash;
+    shadow.scale.setScalar(1 - jumpY * 0.2);
+
+    // head follows pointer
+    var tx = pointer.x, ty = pointer.y;
+    if (performance.now() - lastInteract > 4000) { // idle: look around gently
+      tx = Math.sin(t * 0.7) * 0.5; ty = Math.sin(t * 0.5) * 0.2;
+    }
+    curLookX += (tx - curLookX) * Math.min(1, dt * 5);
+    curLookY += (ty - curLookY) * Math.min(1, dt * 5);
+    head.rotation.y = curLookX * 0.45;
+    head.rotation.x = curLookY * 0.25;
+    head.rotation.z = Math.sin(t * 1.3) * 0.04;
+    eyes.forEach(function (e) {
+      e.pupil.position.x = curLookX * 0.09;
+      e.pupil.position.y = -curLookY * 0.07;
+    });
+
+    // blink
+    if (t > nextBlink && blink === 0) { blink = 0.0001; }
+    if (blink > 0) {
+      blink += dt / 0.16;
+      var k = blink < 0.5 ? 1 - blink * 2 : (blink - 0.5) * 2;
+      var sy = Math.max(0.08, k);
+      eyes.forEach(function (e) { e.grp.scale.y = sy; });
+      if (blink >= 1) {
+        blink = 0;
+        eyes.forEach(function (e) { e.grp.scale.y = 1; });
+        nextBlink = t + 1.8 + Math.random() * 3;
+      }
+    }
+
+    // antenna sway + glow
+    antenna.rotation.z = Math.sin(t * 3) * 0.12 + curLookX * -0.1;
+    antenna.rotation.x = Math.cos(t * 2.4) * 0.08;
+    bulb.material.emissiveIntensity = 0.7 + Math.sin(t * 4) * 0.3;
+
+    // arms: left idle swing, right waves (bigger wave during jump)
+    armL.rotation.z = -0.25 + Math.sin(t * 2.2 + 1) * 0.05;
+    var wave = jumpT >= 0 ? 1 : 0;
+    var waveBase = 2.5 + (jumpT >= 0 ? 0 : Math.sin(t * 0.5) * 0); // raised arm angle
+    var idleWave = Math.max(0, Math.sin(t * 0.35)); // occasional wave
+    var raise = Math.max(wave, idleWave > 0.6 ? 1 : 0);
+    var targetZ = raise ? 2.3 + Math.sin(t * 9) * 0.35 : 0.25 + Math.sin(t * 2.2) * 0.05;
+    armR.rotation.z += (targetZ - armR.rotation.z) * Math.min(1, dt * 8);
+
+    // wings flap
+    var flap = jumpT >= 0 ? Math.sin(t * 28) * 0.6 : Math.sin(t * 5) * 0.12;
+    wingL.rotation.y = 0.5 + flap;
+    wingR.rotation.y = -0.5 - flap;
+    wingL.rotation.z = 0.1; wingR.rotation.z = -0.1;
+
+    // tail whip
+    tail.forEach(function (s, i) {
+      s.rotation.y = Math.sin(t * 3 - i * 0.6) * 0.22;
+      s.rotation.x = Math.sin(t * 2.1 - i * 0.5) * 0.08 + (i === 0 ? 0.5 : 0.05);
+    });
+
+    renderer.render(scene, camera);
+    requestAnimationFrame(frame);
+  }
+  frame();
+})();
+</script>
+</body>
+</html>
